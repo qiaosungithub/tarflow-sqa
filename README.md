@@ -5,7 +5,7 @@ This repo contains code that accompanies the research paper, [Normalizing Flows 
 ![Teaser image](guided_samples.jpeg) 
 
 # Setup
-
+The code is tested on Python3.10, and install dependencies with:
 ```bash
 pip install -r requirements.txt
 ```
@@ -34,10 +34,20 @@ python prepare_fid_stats.py --dataset=imagenet --img_size=64    # Conditional
 ```
 
 # Training
+Toy experiments on MNIST, this can be run locally with MPS (Macbooks) or CPU.
+```bash
+jupyter notebook train_local.ipynb
+```
 
 Reproducing results from the paper
 ```bash
-# Unconditional ImageNet64 (8 GPUs)
+# Unconditional ImageNet64 density modelling (16 GPUs, fp32)
+torchrun --standalone --nproc_per_node=8 train.py --dataset=imagenet64 --img_size=64 --channel_size=3\
+  --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
+  --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
+  --sample_freq=1000 --logdir=runs/imagenet64-uncond-bpd
+
+# Unconditional ImageNet64 generation(8 GPUs)
 torchrun --standalone --nproc_per_node=8 train.py --dataset=imagenet64 --img_size=64 --channel_size=3\
   --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
   --noise_std=0.05 --batch_size=256 --epochs=200 --lr=1e-4 --nvp\
@@ -78,6 +88,12 @@ Use the notebook to generate samples from a model checkpoint. Inside the noteboo
 jupyter notebook sample.ipynb
 ```
 
+# Evaluating BPD
+```bash
+python evaluate_bpd.py --dataset=imagenet64 --img_size=64 --channel_size=3\
+  --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
+  --ckpt_file=runs/imagenet64-uncond-bpd/imagenet64_model_2_768_8_8_uniform.pth
+```
 # Evaluating FID
 
 Multi-GPU (8 GPUs)

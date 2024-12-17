@@ -300,7 +300,7 @@ class Model(torch.nn.Module):
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
         x = self.patchify(x)
         outputs = []
-        logdets = torch.zeros((), device='cuda')
+        logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
             x, logdet = block(x, y)
             logdets = logdets + logdet

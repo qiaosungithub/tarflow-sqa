@@ -84,15 +84,19 @@ def main(args):
     else:
         model_ddp = model
 
-    model_name = f'{args.patch_size}_{args.channels}_{args.blocks}_{args.layers_per_block}_{args.noise_std:.2f}'
+    if args.noise_type == 'gaussian':
+        model_name = f'{args.patch_size}_{args.channels}_{args.blocks}_{args.layers_per_block}_{args.noise_std:.2f}'
+    else:
+        model_name = f'{args.patch_size}_{args.channels}_{args.blocks}_{args.layers_per_block}_uniform'
     sample_dir: pathlib.Path = args.logdir / f'{args.dataset}_samples_{model_name}'
     model_ckpt_file = args.logdir / f'{args.dataset}_model_{model_name}.pth'
     opt_ckpt_file = args.logdir / f'{args.dataset}_opt_{model_name}.pth'
     if dist.local_rank == 0:
         sample_dir.mkdir(parents=True, exist_ok=True)
 
+    enable_amp = args.noise_type == 'gaussian'
     def compute_loss(x, y):
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=enable_amp):
             z, outputs, logdets = model_ddp(x, y)
             loss = model.get_loss(z, logdets)
             return loss, (z, outputs, logdets)
@@ -106,8 +110,13 @@ def main(args):
         metrics = utils.Metrics()
         for x, y in data_loader:
             x = x.cuda()
-            eps = args.noise_std * torch.randn_like(x)
-            x = x + eps
+            if args.noise_type == 'gaussian':
+                eps = args.noise_std * torch.randn_like(x)
+                x = x + eps
+            elif args.noise_type == 'uniform':
+                x_int = (x + 1) * (255 / 2)
+                x = (x_int + torch.rand_like(x_int)) / 256
+                x = x * 2 - 1
             if num_classes:
                 y = y.cuda()
                 mask = (torch.rand(y.size(0), device='cuda') < args.drop_label).int()
@@ -172,6 +181,7 @@ if __name__ == '__main__':
     parser.add_argument('--blocks', default=4, type=int, help='Number of autoregressive flow blocks')
     parser.add_argument('--layers_per_block', default=8, type=int, help='Depth per flow block')
     parser.add_argument('--noise_std', default=0.05, type=float, help='Input noise standard deviation')
+    parser.add_argument('--noise_type', default='gaussian', choices=['gaussian', 'uniform'], type=str)
     parser.add_argument('--cfg', default=0, type=float, help='Guidance weight for sampling, 0 is no guidance')
 
     parser.add_argument('--batch_size', default=128, type=int, help='Training batch size across all devices')
