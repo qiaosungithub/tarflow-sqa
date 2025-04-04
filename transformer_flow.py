@@ -151,6 +151,10 @@ class MetaBlock(torch.nn.Module):
         self.register_buffer('attn_mask', torch.tril(torch.ones(num_patches, num_patches)))
 
     def forward(self, x: torch.Tensor, y: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        x_T' <- (x_T-b(x_1, ..., x_T-1)) * exp(-a(x_1, ..., x_T-1))
+        this part can be paralleled, by using attn_mask
+        """
         x = self.permutation(x)
         pos_embed = self.permutation(self.pos_embed, dim=0)
         x_in = x
@@ -169,7 +173,7 @@ class MetaBlock(torch.nn.Module):
         for block in self.attn_blocks:
             x = block(x, self.attn_mask)
         x = self.proj_out(x)
-        x = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1)
+        x = torch.cat([torch.zeros_like(x[:, :1]), x[:, :-1]], dim=1) # to make x_1 unchanged, a and b for x_1 should be 0
 
         if self.nvp:
             xa, xb = x.chunk(2, dim=-1)
@@ -189,6 +193,10 @@ class MetaBlock(torch.nn.Module):
         attn_temp: float = 1.0,
         which_cache: str = 'cond',
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        x_T' <- exp(a(x_1', ..., x_T-1'))x_T + b(x_1', ..., x_T-1')
+        this should be done in a loop, i.e. cannot parallel
+        """
         x_in = x[:, i : i + 1]  # get i-th patch but keep the sequence dimension
         x = self.proj_in(x_in) + pos_embed[i : i + 1]
         if self.class_embed is not None:
