@@ -1,3 +1,20 @@
+To run Tarflow on CIFAR (unconditional) dataset on the L40 GPU, run:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+python train.py --dataset=cifar --img_size=32 --channel_size=3\
+  --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
+  --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
+  --sample_freq=1000 --logdir=runs/cifar-uncond-bpd
+```
+
+prepare FID stats:
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+torchrun --standalone --nproc_per_node=1 prepare_fid_stats.py --dataset=cifar --img_size=32
+```
+
+original repo documentation:
 # Normalizing Flows are Capable Generative Models
 
 This repo contains code that accompanies the research paper, [Normalizing Flows are Capable Generative Models](http://arxiv.org/abs/2412.06329).

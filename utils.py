@@ -140,6 +140,8 @@ def get_data(dataset: str, img_size: int, folder: pathlib.Path) -> tuple[torch.u
         data = tv.datasets.ImageFolder(str(folder / 'imagenet'), transform=transform)
     elif dataset == 'afhq':
         data = tv.datasets.ImageFolder(str(folder / 'afhq'), transform=transform)
+    elif dataset == 'cifar':
+        data = tv.datasets.CIFAR10(root=str(folder / 'cifar'), train=True, download=True, transform=transform)
     else:
         raise NotImplementedError(f'Unknown dataset {dataset}')
     return data, get_num_classes(dataset)
