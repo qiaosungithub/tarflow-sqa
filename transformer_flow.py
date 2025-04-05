@@ -292,6 +292,9 @@ class Model(torch.nn.Module):
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
         self.register_buffer('var', torch.ones(self.num_patches, in_channels * patch_size**2))
+        # print number of parameters
+        num_params = sum(p.numel() for p in self.parameters())
+        print(f'Number of parameters: {num_params / 1e6:.2f}M')
 
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
