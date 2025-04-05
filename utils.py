@@ -121,7 +121,7 @@ class Metrics:
 
 
 def get_num_classes(dataset: str) -> int:
-    return {'imagenet64': 0, 'imagenet': 1000, 'afhq': 3}[dataset]
+    return {'imagenet64': 0, 'imagenet': 1000, 'afhq': 3, 'cifar': 10}[dataset]
 
 
 def get_data(dataset: str, img_size: int, folder: pathlib.Path) -> tuple[torch.utils.data.Dataset, int]:

@@ -2,17 +2,27 @@ To run Tarflow on CIFAR (unconditional) dataset on the L40 GPU, run:
 
 ```bash
 conda activate sqa
-CUDA_VISIBLE_DEVICES=4
+CUDA_VISIBLE_DEVICES=4 \
 python train.py --dataset=cifar --img_size=32 --channel_size=3\
+  --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
+  --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
+  --sample_freq=1000 --logdir=runs/cifar-uncond-bpd
+
+conda activate sqa
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+torchrun --standalone --nproc_per_node=4 train.py --dataset=cifar --img_size=32 --channel_size=3\
   --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
   --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
   --sample_freq=1000 --logdir=runs/cifar-uncond-bpd
 ```
 
-prepare FID stats:
+You may need to first prepare FID stats: (recommend run on 4 GPUs, on one there might be OOM)
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-torchrun --standalone --nproc_per_node=1 prepare_fid_stats.py --dataset=cifar --img_size=32
+CUDA_VISIBLE_DEVICES=4 \
+python prepare_fid_stats.py --dataset=cifar --img_size=32
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+torchrun --standalone --nproc_per_node=4 prepare_fid_stats.py --dataset=cifar --img_size=32
 ```
 
 original repo documentation:
