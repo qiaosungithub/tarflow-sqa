@@ -1,7 +1,8 @@
 To run Tarflow on CIFAR (unconditional) dataset on the L40 GPU, run:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
+conda activate sqa
+CUDA_VISIBLE_DEVICES=4
 python train.py --dataset=cifar --img_size=32 --channel_size=3\
   --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
   --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
