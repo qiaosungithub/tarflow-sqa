@@ -273,14 +273,20 @@ class Model(torch.nn.Module):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
+        self.channels = channels
         self.num_patches = (img_size // patch_size) ** 2
+        pixel_channels = in_channels * patch_size**2
+
+        self.x_embedder = torch.nn.Linear(pixel_channels, channels)
+
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
         blocks = []
         for i in range(num_blocks):
             blocks.append(
                 MetaBlock(
-                    in_channels * patch_size**2,
+                    # pixel_channels,
+                    channels,
                     channels,
                     self.num_patches,
                     permutations[i % 2],
@@ -299,19 +305,34 @@ class Model(torch.nn.Module):
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
         u = torch.nn.functional.unfold(x, self.patch_size, stride=self.patch_size)
-        return u.transpose(1, 2)
+        u = u.transpose(1, 2)
+        u = self.x_embedder(u)
+        # calculate pseudo-jacobian
+        W = self.x_embedder.weight
+        # print(W.shape) # (channels, pixel_channels)
+        # assert False, '邓'
+        WW = W.T @ W
+        assert WW.shape == (16, 16)
+        logdet = (torch.logdet(WW) * 1/2) / (self.num_patches * self.channels) # we mean across token and channels
+        return u, logdet
 
     def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert a sequence of patches (N,T,C) to an image (N,C',H,W)"""
+        # here we do decode, by "reversing" the x embedder (which is a linear layer)
+        weight = self.x_embedder.weight
+        bias = self.x_embedder.bias
+        x = torch.matmul(torch.linalg.pinv(weight), x - bias)
+
         u = x.transpose(1, 2)
-        return torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
+        u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
+        return u
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
-        x = self.patchify(x)
+        x, logdets = self.patchify(x)
         outputs = []
-        logdets = torch.zeros((), device=x.device)
+        # logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
             x, logdet = block(x, y)
             logdets = logdets + logdet
