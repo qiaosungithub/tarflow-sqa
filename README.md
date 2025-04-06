@@ -5,14 +5,14 @@ conda activate sqa
 CUDA_VISIBLE_DEVICES=4 \
 python train.py --dataset=cifar --img_size=32 --channel_size=3\
   --patch_size=2 --channels=384 --blocks=12 --layers_per_block=4\
-  --noise_std=0.05 --batch_size=256 --epochs=100 --lr=1e-4 --nvp --cfg=0 --drop_label=0.1\
+  --noise_std=0.05 --batch_size=1024 --epochs=3000 --lr=5e-4 --nvp --cfg=0 --drop_label=0.1\
   --sample_freq=1000 --logdir=runs/cifar-cond-bpd
 
 conda activate sqa
 CUDA_VISIBLE_DEVICES=4,5 \
 torchrun --standalone --nproc_per_node=2 train.py --dataset=cifar --img_size=32 --channel_size=3\
   --patch_size=2 --channels=384 --blocks=12 --layers_per_block=4\
-  --noise_std=0.05 --batch_size=256 --epochs=100 --lr=1e-4 --nvp --cfg=0 --drop_label=0.1\
+  --noise_std=0.05 --batch_size=1024 --epochs=3000 --lr=5e-4 --nvp --cfg=0 --drop_label=0.1\
   --sample_freq=1000 --logdir=runs/cifar-cond-bpd
 ```
 
