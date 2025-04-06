@@ -1,20 +1,22 @@
-To run Tarflow on CIFAR (unconditional) dataset on the L40 GPU, run:
+To run Tarflow on CIFAR (conditional) dataset on the L40 GPU, run:
 
 ```bash
 conda activate sqa
 CUDA_VISIBLE_DEVICES=4 \
 python train.py --dataset=cifar --img_size=32 --channel_size=3\
-  --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
-  --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
-  --sample_freq=1000 --logdir=runs/cifar-uncond-bpd
+  --patch_size=2 --channels=384 --blocks=12 --layers_per_block=4\
+  --noise_std=0.05 --batch_size=256 --epochs=100 --lr=1e-4 --nvp --cfg=0 --drop_label=0.1\
+  --sample_freq=1000 --logdir=runs/cifar-cond-bpd
 
 conda activate sqa
-CUDA_VISIBLE_DEVICES=4,5,6,7 \
-torchrun --standalone --nproc_per_node=4 train.py --dataset=cifar --img_size=32 --channel_size=3\
-  --patch_size=2 --channels=768 --blocks=8 --layers_per_block=8\
-  --noise_type=uniform --batch_size=256 --epochs=100 --lr=1e-4 --nvp\
-  --sample_freq=1000 --logdir=runs/cifar-uncond-bpd
+CUDA_VISIBLE_DEVICES=4,5 \
+torchrun --standalone --nproc_per_node=2 train.py --dataset=cifar --img_size=32 --channel_size=3\
+  --patch_size=2 --channels=384 --blocks=12 --layers_per_block=4\
+  --noise_std=0.05 --batch_size=256 --epochs=100 --lr=1e-4 --nvp --cfg=0 --drop_label=0.1\
+  --sample_freq=1000 --logdir=runs/cifar-cond-bpd
 ```
+
+This model uses Lyy's, which has ~86M parameters. This can be run on 2 GPUs but not one.
 
 You may need to first prepare FID stats: (recommend run on 4 GPUs, on one there might be OOM)
 ```bash
