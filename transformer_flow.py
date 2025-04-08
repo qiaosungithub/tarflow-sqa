@@ -297,7 +297,7 @@ class Model(torch.nn.Module):
             )
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
-        self.register_buffer('var', torch.ones(self.num_patches, in_channels * patch_size**2))
+        self.register_buffer('var', torch.ones(self.num_patches, channels))
         # print number of parameters
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
@@ -321,7 +321,11 @@ class Model(torch.nn.Module):
         # here we do decode, by "reversing" the x embedder (which is a linear layer)
         weight = self.x_embedder.weight
         bias = self.x_embedder.bias
-        x = torch.matmul(torch.linalg.pinv(weight), x - bias)
+        # print(f"x shape: {x.shape}")
+        # print(f"weight shape: {weight.shape}")
+        # print(f"bias shape: {bias.shape}")
+        # print(f"inv weight shape: {torch.linalg.pinv(weight).shape}")
+        x = torch.matmul(x - bias, torch.linalg.pinv(weight).T)
 
         u = x.transpose(1, 2)
         u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
