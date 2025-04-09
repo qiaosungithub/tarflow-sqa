@@ -302,6 +302,7 @@ class Model(torch.nn.Module):
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
 
+    @torch.no_grad()
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
         u = torch.nn.functional.unfold(x, self.patch_size, stride=self.patch_size)
@@ -312,7 +313,7 @@ class Model(torch.nn.Module):
         # print(W.shape) # (channels, pixel_channels)
         # assert False, '邓'
         WW = W.T @ W
-        assert WW.shape == (16, 16)
+        # assert WW.shape == (16, 16)
         assert not torch.any(torch.isnan(WW)), f"WW has nan"
         logdet = (torch.logdet(WW) * 1/2) / (self.num_patches * self.channels) # we mean across token and channels
         assert not torch.any(torch.isnan(logdet)), f"logdet has nan.\n\nThe matrix W: {W}, \nWW: {WW}"
@@ -343,7 +344,8 @@ class Model(torch.nn.Module):
         if torch.any(torch.isnan(x)): print(f"Warning!!!!!!!!!! there is nan in x of patchify")
         if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of patchify")
         outputs = []
-        # logdets = torch.zeros((), device=x.device)
+        # print(f"x embedder logdet: {logdets}")
+        logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
             x, logdet = block(x, y)
             # print(f"logdet shape: {logdet.shape}") # (B,)
