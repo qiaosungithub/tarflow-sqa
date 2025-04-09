@@ -313,7 +313,10 @@ class Model(torch.nn.Module):
         # assert False, '邓'
         WW = W.T @ W
         assert WW.shape == (16, 16)
+        assert not torch.any(torch.isnan(WW)), f"WW has nan"
         logdet = (torch.logdet(WW) * 1/2) / (self.num_patches * self.channels) # we mean across token and channels
+        assert not torch.any(torch.isnan(logdet)), f"logdet has nan.\n\nThe matrix W: {W}, \nWW: {WW}"
+        assert not torch.any(torch.isinf(logdet)), f"logdet has inf.\n\nThe matrix W: {W}, \nWW: {WW}"
         return u, logdet
 
     def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
@@ -326,6 +329,8 @@ class Model(torch.nn.Module):
         # print(f"bias shape: {bias.shape}")
         # print(f"inv weight shape: {torch.linalg.pinv(weight).shape}")
         x = torch.matmul(x - bias, torch.linalg.pinv(weight).T)
+        assert not torch.any(torch.isnan(x)), f"x has nan.\n\nThe matrix W: {weight}, \npinv: {torch.linalg.pinv(weight).T}"
+        assert not torch.any(torch.isinf(x)), f"x has inf.\n\nThe matrix W: {weight}, \npinv: {torch.linalg.pinv(weight).T}"
 
         u = x.transpose(1, 2)
         u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
@@ -335,12 +340,21 @@ class Model(torch.nn.Module):
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
         x, logdets = self.patchify(x)
+        if torch.any(torch.isnan(x)): print(f"Warning!!!!!!!!!! there is nan in x of patchify")
+        if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of patchify")
         outputs = []
         # logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
             x, logdet = block(x, y)
+            # print(f"logdet shape: {logdet.shape}") # (B,)
+            if torch.any(torch.isnan(logdet)): print(f"Warning!!!!!!!!!! there is nan in logdet of block")
+            if torch.any(torch.isinf(logdet)): print(f"Warning!!!!!!!!!! there is inf in logdet of block")
+            if torch.any(torch.isnan(x)): print(f"Warning!!!!!!!!!! there is nan in x of block")
+            if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of block")
             logdets = logdets + logdet
             outputs.append(x)
+        # if torch.isnan(logdets).any():
+        #     assert False, f"logdet has nan"
         return x, outputs, logdets
 
     def update_prior(self, z: torch.Tensor):
@@ -364,6 +378,8 @@ class Model(torch.nn.Module):
         x = x * self.var.sqrt()
         for block in reversed(self.blocks):
             x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
+            assert not torch.any(torch.isnan(x)), f"x has nan after block reverse"
+            assert not torch.any(torch.isinf(x)), f"x has inf after block reverse"
             seq.append(self.unpatchify(x))
         x = self.unpatchify(x)
 
