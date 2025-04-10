@@ -273,14 +273,16 @@ class Model(torch.nn.Module):
         super().__init__()
         self.img_size = img_size
         self.patch_size = patch_size
+        self.channels = channels
         self.num_patches = (img_size // patch_size) ** 2
+        self.pixel_channels = pixel_channels = in_channels * patch_size**2
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
         blocks = []
         for i in range(num_blocks):
             blocks.append(
                 MetaBlock(
-                    in_channels * patch_size**2,
+                    pixel_channels,
                     channels,
                     self.num_patches,
                     permutations[i % 2],
@@ -291,7 +293,7 @@ class Model(torch.nn.Module):
             )
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
-        self.register_buffer('var', torch.ones(self.num_patches, in_channels * patch_size**2))
+        self.register_buffer('var', torch.ones(self.num_patches, pixel_channels))
         # print number of parameters
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
