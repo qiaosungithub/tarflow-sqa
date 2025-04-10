@@ -275,9 +275,9 @@ class Model(torch.nn.Module):
         self.patch_size = patch_size
         self.channels = channels
         self.num_patches = (img_size // patch_size) ** 2
-        pixel_channels = in_channels * patch_size**2
+        self.pixel_channels = pixel_channels = in_channels * patch_size**2
 
-        self.x_embedder = torch.nn.Linear(pixel_channels, channels)
+        self.x_embedder = torch.nn.Linear(pixel_channels, pixel_channels)
 
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
@@ -285,8 +285,8 @@ class Model(torch.nn.Module):
         for i in range(num_blocks):
             blocks.append(
                 MetaBlock(
-                    # pixel_channels,
-                    channels,
+                    pixel_channels,
+                    # channels,
                     channels,
                     self.num_patches,
                     permutations[i % 2],
@@ -297,7 +297,7 @@ class Model(torch.nn.Module):
             )
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
-        self.register_buffer('var', torch.ones(self.num_patches, channels))
+        self.register_buffer('var', torch.ones(self.num_patches, pixel_channels))
         # print number of parameters
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
@@ -312,12 +312,12 @@ class Model(torch.nn.Module):
         W = self.x_embedder.weight
         # print(W.shape) # (channels, pixel_channels)
         # assert False, '邓'
-        WW = W.T @ W
-        # assert WW.shape == (16, 16)
-        assert not torch.any(torch.isnan(WW)), f"WW has nan"
-        logdet = (torch.logdet(WW) * 1/2) / (self.num_patches * self.channels) # we mean across token and channels
-        assert not torch.any(torch.isnan(logdet)), f"logdet has nan.\n\nThe matrix W: {W}, \nWW: {WW}"
-        assert not torch.any(torch.isinf(logdet)), f"logdet has inf.\n\nThe matrix W: {W}, \nWW: {WW}"
+        # WW = W.T @ W
+        # assert not torch.any(torch.isnan(WW)), f"WW has nan"
+        # logdet = (torch.logdet(W.T @ W) * 1/2) / (self.num_patches * self.channels) # we mean across token and channels
+        logdet = (torch.slogdet(W)[1]) / (self.num_patches * self.pixel_channels)  # we mean across token and channels
+        assert not torch.any(torch.isnan(logdet)), f"logdet has nan.\n\nThe matrix W: {W}, \nW: {W}"
+        assert not torch.any(torch.isinf(logdet)), f"logdet has inf.\n\nThe matrix W: {W}, \nW: {W}"
         return u, logdet
 
     def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
@@ -329,9 +329,9 @@ class Model(torch.nn.Module):
         # print(f"weight shape: {weight.shape}")
         # print(f"bias shape: {bias.shape}")
         # print(f"inv weight shape: {torch.linalg.pinv(weight).shape}")
-        x = torch.matmul(x - bias, torch.linalg.pinv(weight).T)
-        assert not torch.any(torch.isnan(x)), f"x has nan.\n\nThe matrix W: {weight}, \npinv: {torch.linalg.pinv(weight).T}"
-        assert not torch.any(torch.isinf(x)), f"x has inf.\n\nThe matrix W: {weight}, \npinv: {torch.linalg.pinv(weight).T}"
+        x = torch.matmul(x - bias, torch.linalg.inv(weight).T)
+        assert not torch.any(torch.isnan(x)), f"x has nan.\n\nThe matrix W: {weight}, \ninv: {torch.linalg.inv(weight).T}"
+        assert not torch.any(torch.isinf(x)), f"x has inf.\n\nThe matrix W: {weight}, \ninv: {torch.linalg.inv(weight).T}"
 
         u = x.transpose(1, 2)
         u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
@@ -345,7 +345,7 @@ class Model(torch.nn.Module):
         if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of patchify")
         outputs = []
         # print(f"x embedder logdet: {logdets}")
-        logdets = torch.zeros((), device=x.device)
+        # logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
             x, logdet = block(x, y)
             # print(f"logdet shape: {logdet.shape}") # (B,)
