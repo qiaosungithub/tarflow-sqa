@@ -3,7 +3,7 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 #
 import torch
-
+from utils import nan_or_inf
 
 class Permutation(torch.nn.Module):
 
@@ -255,6 +255,29 @@ class MetaBlock(torch.nn.Module):
         return self.permutation(x, inverse=True)
 
 
+class Unitary(torch.nn.Module):
+    # apply this on N tokens (try to replace the permutation)
+    def __init__(self, num_tokens: int):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(num_tokens, num_tokens) * 1e-2 + torch.eye(num_tokens))
+        logdet = torch.slogdet(self.weight)[1] / (num_tokens)
+        print(f"Unitary logdet: {logdet:.2f}")
+        # # sanity check
+        # x = torch.arange(num_tokens).reshape(1, -1, 1).float()
+        # y = self.forward(x)
+        # print(self.reverse(y).reshape(-1))
+        # assert torch.allclose(self.reverse(y), x), "Reverse operation did not match original input!"
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        out = torch.einsum('bnc,nm->bmc', x, self.weight)
+        return out
+    
+    def reverse(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        out = torch.einsum('bnc,nm->bmc', x, self.weight.inverse())
+        return out
+
 class Model(torch.nn.Module):
     VAR_LR: float = 0.1
     var: torch.Tensor
@@ -276,12 +299,12 @@ class Model(torch.nn.Module):
         self.channels = channels
         self.num_patches = (img_size // patch_size) ** 2
         self.pixel_channels = pixel_channels = in_channels * patch_size**2
-
-        self.x_embedder = torch.nn.Linear(pixel_channels, pixel_channels)
+        self.num_blocks = num_blocks
 
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
         blocks = []
+        unitaries = []
         for i in range(num_blocks):
             blocks.append(
                 MetaBlock(
@@ -295,6 +318,8 @@ class Model(torch.nn.Module):
                     num_classes=num_classes,
                 )
             )
+            unitaries.append(Unitary(self.num_patches))
+        self.unitaries = torch.nn.ModuleList(unitaries)
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
         self.register_buffer('var', torch.ones(self.num_patches, pixel_channels))
@@ -302,37 +327,14 @@ class Model(torch.nn.Module):
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
 
-    @torch.no_grad()
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
         u = torch.nn.functional.unfold(x, self.patch_size, stride=self.patch_size)
         u = u.transpose(1, 2)
-        u = self.x_embedder(u)
-        # calculate pseudo-jacobian
-        W = self.x_embedder.weight
-        # print(W.shape) # (channels, pixel_channels)
-        # assert False, '邓'
-        # WW = W.T @ W
-        # assert not torch.any(torch.isnan(WW)), f"WW has nan"
-        # logdet = (torch.logdet(W.T @ W) * 1/2) / (self.num_patches * self.channels) # we mean across token and channels
-        logdet = (torch.slogdet(W)[1]) / (self.num_patches * self.pixel_channels)  # we mean across token and channels
-        assert not torch.any(torch.isnan(logdet)), f"logdet has nan.\n\nThe matrix W: {W}, \nW: {W}"
-        assert not torch.any(torch.isinf(logdet)), f"logdet has inf.\n\nThe matrix W: {W}, \nW: {W}"
-        return u, logdet
+        return u
 
     def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert a sequence of patches (N,T,C) to an image (N,C',H,W)"""
-        # here we do decode, by "reversing" the x embedder (which is a linear layer)
-        weight = self.x_embedder.weight
-        bias = self.x_embedder.bias
-        # print(f"x shape: {x.shape}")
-        # print(f"weight shape: {weight.shape}")
-        # print(f"bias shape: {bias.shape}")
-        # print(f"inv weight shape: {torch.linalg.pinv(weight).shape}")
-        x = torch.matmul(x - bias, torch.linalg.inv(weight).T)
-        assert not torch.any(torch.isnan(x)), f"x has nan.\n\nThe matrix W: {weight}, \ninv: {torch.linalg.inv(weight).T}"
-        assert not torch.any(torch.isinf(x)), f"x has inf.\n\nThe matrix W: {weight}, \ninv: {torch.linalg.inv(weight).T}"
-
         u = x.transpose(1, 2)
         u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
         return u
@@ -340,23 +342,22 @@ class Model(torch.nn.Module):
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
-        x, logdets = self.patchify(x)
+        x = self.patchify(x)
         if torch.any(torch.isnan(x)): print(f"Warning!!!!!!!!!! there is nan in x of patchify")
         if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of patchify")
         outputs = []
-        # print(f"x embedder logdet: {logdets}")
-        # logdets = torch.zeros((), device=x.device)
-        for block in self.blocks:
+        logdets = torch.zeros((), device=x.device)
+        for i in range(self.num_blocks):
+            block = self.blocks[i]
+            unitary = self.unitaries[i]
             x, logdet = block(x, y)
-            # print(f"logdet shape: {logdet.shape}") # (B,)
-            if torch.any(torch.isnan(logdet)): print(f"Warning!!!!!!!!!! there is nan in logdet of block")
-            if torch.any(torch.isinf(logdet)): print(f"Warning!!!!!!!!!! there is inf in logdet of block")
-            if torch.any(torch.isnan(x)): print(f"Warning!!!!!!!!!! there is nan in x of block")
-            if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of block")
-            logdets = logdets + logdet
+            nan_or_inf(logdet, f"block {i} logdet")
+            nan_or_inf(x, f"block {i} output")
+            x = unitary(x)
+            u_logdet = torch.slogdet(unitary.weight)[1] / (self.num_patches)
+            nan_or_inf(u_logdet, f"block {i} unitary logdet")
+            logdets = logdets + logdet + u_logdet
             outputs.append(x)
-        # if torch.isnan(logdets).any():
-        #     assert False, f"logdet has nan"
         return x, outputs, logdets
 
     def update_prior(self, z: torch.Tensor):
@@ -378,10 +379,13 @@ class Model(torch.nn.Module):
     ) -> torch.Tensor | list[torch.Tensor]:
         seq = [self.unpatchify(x)]
         x = x * self.var.sqrt()
-        for block in reversed(self.blocks):
+        for i in range(self.num_blocks-1, -1, -1):
+            block = self.blocks[i]
+            unitary = self.unitaries[i]
             x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
-            assert not torch.any(torch.isnan(x)), f"x has nan after block reverse"
-            assert not torch.any(torch.isinf(x)), f"x has inf after block reverse"
+            nan_or_inf(x, f"reverse, block {i} output")
+            x = unitary.reverse(x)
+            nan_or_inf(x, f"reverse, block {i} unitary output")
             seq.append(self.unpatchify(x))
         x = self.unpatchify(x)
 

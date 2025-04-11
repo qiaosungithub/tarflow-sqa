@@ -153,3 +153,10 @@ def set_random_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+def nan_or_inf(x: torch.Tensor, s:str) -> bool:
+    if torch.any(torch.isnan(x)):
+        print(f"Warning! NaN detected in "+s)
+    elif torch.any(torch.isinf(x)):
+        print(f"Warning! Inf detected in "+s)
+    return
