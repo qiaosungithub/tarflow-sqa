@@ -343,8 +343,7 @@ class Model(torch.nn.Module):
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
         x = self.patchify(x)
-        if torch.any(torch.isnan(x)): print(f"Warning!!!!!!!!!! there is nan in x of patchify")
-        if torch.any(torch.isinf(x)): print(f"Warning!!!!!!!!!! there is inf in x of patchify")
+        nan_or_inf(x, "patchify")
         outputs = []
         logdets = torch.zeros((), device=x.device)
         for i in range(self.num_blocks):
