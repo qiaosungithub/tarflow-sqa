@@ -381,10 +381,10 @@ class Model(torch.nn.Module):
         for i in range(self.num_blocks-1, -1, -1):
             block = self.blocks[i]
             unitary = self.unitaries[i]
-            x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
-            nan_or_inf(x, f"reverse, block {i} output")
             x = unitary.reverse(x)
             nan_or_inf(x, f"reverse, block {i} unitary output")
+            x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
+            nan_or_inf(x, f"reverse, block {i} output")
             seq.append(self.unpatchify(x))
         x = self.unpatchify(x)
 
