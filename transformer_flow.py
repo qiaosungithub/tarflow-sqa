@@ -3,7 +3,7 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 #
 import torch
-
+from utils import nan_or_inf
 
 class Permutation(torch.nn.Module):
 
@@ -312,10 +312,13 @@ class Model(torch.nn.Module):
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
         x = self.patchify(x)
+        nan_or_inf(x, "patchify")
         outputs = []
         logdets = torch.zeros((), device=x.device)
         for block in self.blocks:
             x, logdet = block(x, y)
+            nan_or_inf(logdet, f"block {i} logdet")
+            nan_or_inf(x, f"block {i} output")
             logdets = logdets + logdet
             outputs.append(x)
         return x, outputs, logdets
@@ -341,6 +344,7 @@ class Model(torch.nn.Module):
         x = x * self.var.sqrt()
         for block in reversed(self.blocks):
             x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
+            nan_or_inf(x, f"reverse, block {i} output")
             seq.append(self.unpatchify(x))
         x = self.unpatchify(x)
 
