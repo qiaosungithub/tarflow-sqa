@@ -160,3 +160,8 @@ def nan_or_inf(x: torch.Tensor, s:str) -> bool:
     elif torch.any(torch.isinf(x)):
         print(f"Warning! Inf detected in "+s)
     return
+
+def sqa_save(x: torch.Tensor, path, nrow=10):
+    # default x is [-1, 1]
+    x = (x + 1) / 2
+    tv.save_image(x, path, nrow=nrow, normalize=False)
