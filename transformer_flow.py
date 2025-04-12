@@ -255,11 +255,34 @@ class MetaBlock(torch.nn.Module):
         return self.permutation(x, inverse=True)
 
 
-class Unitary(torch.nn.Module):
+class Unitary_Res(torch.nn.Module):
     # apply this on N tokens (try to replace the permutation)
     def __init__(self, num_tokens: int):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.randn(num_tokens, num_tokens) * 1e-2 + torch.eye(num_tokens))
+        logdet = torch.slogdet(self.weight)[1] / (num_tokens)
+        print(f"Unitary logdet: {logdet:.2f}")
+        # # sanity check
+        # x = torch.arange(num_tokens).reshape(1, -1, 1).float()
+        # y = self.forward(x)
+        # print(self.reverse(y).reshape(-1))
+        # assert torch.allclose(self.reverse(y), x), "Reverse operation did not match original input!"
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        out = torch.einsum('bnc,nm->bmc', x, self.weight)
+        return out
+    
+    def reverse(self, x: torch.Tensor) -> torch.Tensor:
+        B, N, C = x.shape
+        out = torch.einsum('bnc,nm->bmc', x, self.weight.inverse())
+        return out
+    
+class Unitary_vanilla(torch.nn.Module):
+    # apply this on N tokens
+    def __init__(self, num_tokens: int):
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.randn(num_tokens, num_tokens) * num_tokens**-0.5) # to make it approximately unitary. No residual connection.
         logdet = torch.slogdet(self.weight)[1] / (num_tokens)
         print(f"Unitary logdet: {logdet:.2f}")
         # # sanity check
@@ -318,7 +341,8 @@ class Model(torch.nn.Module):
                     num_classes=num_classes,
                 )
             )
-            unitaries.append(Unitary(self.num_patches))
+            # unitaries.append(Unitary_Res(self.num_patches))
+            unitaries.append(Unitary_vanilla(self.num_patches))
         self.unitaries = torch.nn.ModuleList(unitaries)
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
