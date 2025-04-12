@@ -276,6 +276,8 @@ class Model(torch.nn.Module):
         self.channels = channels
         self.num_patches = (img_size // patch_size) ** 2
         self.pixel_channels = pixel_channels = in_channels * patch_size**2
+        self.num_blocks = num_blocks
+
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
         blocks = []
@@ -301,12 +303,14 @@ class Model(torch.nn.Module):
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
         u = torch.nn.functional.unfold(x, self.patch_size, stride=self.patch_size)
-        return u.transpose(1, 2)
+        u = u.transpose(1, 2)
+        return u
 
     def unpatchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert a sequence of patches (N,T,C) to an image (N,C',H,W)"""
         u = x.transpose(1, 2)
-        return torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
+        u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
+        return u
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
@@ -315,7 +319,8 @@ class Model(torch.nn.Module):
         nan_or_inf(x, "patchify")
         outputs = []
         logdets = torch.zeros((), device=x.device)
-        for block in self.blocks:
+        for i in range(self.num_blocks):
+            block = self.blocks[i]
             x, logdet = block(x, y)
             nan_or_inf(logdet, f"block {i} logdet")
             nan_or_inf(x, f"block {i} output")
@@ -342,7 +347,8 @@ class Model(torch.nn.Module):
     ) -> torch.Tensor | list[torch.Tensor]:
         seq = [self.unpatchify(x)]
         x = x * self.var.sqrt()
-        for block in reversed(self.blocks):
+        for i in range(self.num_blocks-1, -1, -1):
+            block = self.blocks[i]
             x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
             nan_or_inf(x, f"reverse, block {i} output")
             seq.append(self.unpatchify(x))
