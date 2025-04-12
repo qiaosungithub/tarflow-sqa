@@ -310,11 +310,15 @@ class Model(torch.nn.Module):
         """Convert a sequence of patches (N,T,C) to an image (N,C',H,W)"""
         u = x.transpose(1, 2)
         u = torch.nn.functional.fold(u, (self.img_size, self.img_size), self.patch_size, stride=self.patch_size)
+        # postprocess
+        u = torch.sigmoid(u)
         return u
 
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
+        # preprocess
+        x = torch.log(x) - torch.log(1-x)
         x = self.patchify(x)
         nan_or_inf(x, "patchify")
         outputs = []
