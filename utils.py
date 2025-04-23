@@ -164,4 +164,4 @@ def nan_or_inf(x: torch.Tensor, s:str) -> bool:
 def sqa_save(x: torch.Tensor, path, nrow=10):
     # default x is [-1, 1]
     x = (x + 1) / 2
-    tv.save_image(x, path, nrow=nrow, normalize=False)
+    tv.utils.save_image(x, path, nrow=nrow, normalize=False)

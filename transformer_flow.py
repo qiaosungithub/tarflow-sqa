@@ -254,6 +254,45 @@ class MetaBlock(torch.nn.Module):
         self.set_sample_mode(False)
         return self.permutation(x, inverse=True)
 
+class BatchNormFlow(torch.nn.Module):
+    def __init__(self, shape, momentum=0.9, eps=1e-6):
+        super().__init__()
+        self.log_gamma = torch.nn.Parameter(torch.zeros(shape))
+        self.beta = torch.nn.Parameter(torch.zeros(shape))
+        
+        self.register_buffer('running_mean', torch.zeros(shape))
+        self.register_buffer('running_var', torch.ones(shape))
+
+        self.momentum = momentum
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor, train: bool = True):
+        if train:
+            # update running stats
+            batch_mean = x.mean(dim=0)
+            batch_var = (x - batch_mean).pow(2).mean(dim=0) + self.eps
+
+            # _lerp: linear interpolation
+            self.running_mean.lerp_(batch_mean.detach(), weight=self.momentum) # we stop grad of batch stats
+            self.running_var.lerp_(batch_var.detach(), weight=self.momentum)
+        
+            mean = batch_mean
+            var = batch_var
+        else:
+            mean = self.running_mean
+            var = self.running_var
+
+        x = (x - mean) / var.sqrt()
+        x = x * self.log_gamma.exp() + self.beta
+        logdet = (self.log_gamma - 0.5 * torch.log(var)).mean()
+        return x, logdet
+    
+    def reverse(self, x: torch.Tensor): # only for eval
+        mean = self.running_mean
+        var = self.running_var
+        x = (x - self.beta) / self.log_gamma.exp()
+        x = x * var.sqrt() + mean
+        return x
 
 class Model(torch.nn.Module):
     VAR_LR: float = 0.1
@@ -293,6 +332,10 @@ class Model(torch.nn.Module):
                     num_classes=num_classes,
                 )
             )
+            if i < num_blocks - 1:
+                blocks.append(
+                    BatchNormFlow(shape=(self.num_patches, pixel_channels), momentum=0.9, eps=1e-6)
+                )
         self.blocks = torch.nn.ModuleList(blocks)
         # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
         self.register_buffer('var', torch.ones(self.num_patches, pixel_channels))
@@ -319,11 +362,15 @@ class Model(torch.nn.Module):
         nan_or_inf(x, "patchify")
         outputs = []
         logdets = torch.zeros((), device=x.device)
-        for i in range(self.num_blocks):
-            block = self.blocks[i]
-            x, logdet = block(x, y)
-            nan_or_inf(logdet, f"block {i} logdet")
-            nan_or_inf(x, f"block {i} output")
+        for i, block in enumerate(self.blocks):
+            if isinstance(block, BatchNormFlow):
+                x, logdet = block(x, train=True)
+                nan_or_inf(logdet, f"BN block {i} logdet")
+                nan_or_inf(x, f"BN block {i} output")
+            else:
+                x, logdet = block(x, y)
+                nan_or_inf(logdet, f"block {i} logdet")
+                nan_or_inf(x, f"block {i} output")
             logdets = logdets + logdet
             outputs.append(x)
         return x, outputs, logdets
@@ -347,10 +394,14 @@ class Model(torch.nn.Module):
     ) -> torch.Tensor | list[torch.Tensor]:
         seq = [self.unpatchify(x)]
         x = x * self.var.sqrt()
-        for i in range(self.num_blocks-1, -1, -1):
-            block = self.blocks[i]
-            x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
-            nan_or_inf(x, f"reverse, block {i} output")
+        assert len(self.blocks) == self.num_blocks * 2 - 1
+        for i, block in enumerate(reversed(self.blocks)):
+            if isinstance(block, BatchNormFlow):
+                x = block.reverse(x)
+                nan_or_inf(x, f"reverse, BN block {self.num_blocks * 2 - 2 - i} output")
+            else:
+                x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)
+                nan_or_inf(x, f"reverse, block {self.num_blocks * 2 - 2 - i} output")
             seq.append(self.unpatchify(x))
         x = self.unpatchify(x)
 
