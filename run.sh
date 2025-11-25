@@ -21,7 +21,9 @@ echo Log dir: $LOG_DIR
 echo Starting at $(date)
 cd $STAGE_DIR
 
-python -m wandb login 73f8ff40bb7f8589e9bd1f476196a896f662cdfa
+/data/scratch-oc40/zhh24/anaconda3/bin/python -m wandb login 73f8ff40bb7f8589e9bd1f476196a896f662cdfa
+sleep 1
+/data/scratch-oc40/zhh24/anaconda3/bin/python -m wandb login
 
 python train.py --workdir=$LOG_DIR | tee -a $LOG_DIR/output.log
 echo Finished at $(date)

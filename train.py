@@ -80,6 +80,7 @@ def train_and_evaluate(workdir):
     step_per_ep = len(data_loader) // batch_size
 
     for epoch in range(epochs):
+        logging.info(f'epoch {epoch}')
         losses = 0
         for x, y in data_loader:
             x = x.to(device)
@@ -104,7 +105,6 @@ def train_and_evaluate(workdir):
         for i, z in enumerate(outputs):
             log_dict[f'norm_layer_{i}'] = z.pow(2).mean()
         
-        logging.info(f'epoch {epoch}')
         for k, v in log_dict.items():
             logging.info(f'{k}: {v}')
 
@@ -118,12 +118,14 @@ def train_and_evaluate(workdir):
             sqa_save(samples, sample_dir + f'/samples_{epoch:03d}.png')
             assert samples.shape == (100, 1, 28, 28)
             samples = samples.reshape(10, 10, 1, 28, 28).permute(0, 3, 1, 4, 2).reshape(10 * 28, 10 * 28, 1)
+            samples = ((samples + 1.) / 2. * 255).to(torch.uint8)
             wandb.log({'samples': wandb.Image(samples, mode='L')}, step=step_per_ep*epoch)
 
             latents = model.unpatchify(z[:100])
             sqa_save(latents, sample_dir + f'/latent_{epoch:03d}.png')
             assert latents.shape == (100, 1, 28, 28)
             latents = latents.reshape(10, 10, 1, 28, 28).permute(0, 3, 1, 4, 2).reshape(10 * 28, 10 * 28, 1)
+            latents = ((latents + 1.) / 2. * 255).to(torch.uint8)
             wandb.log({'latents': wandb.Image(latents, mode='L')}, step=step_per_ep*epoch)
 
             logging.info(f'sampling complete. Sample mean: {samples.mean():.4f}, std: {samples.std():.4f}, max: {samples.max():.4f}, min: {samples.min():.4f}')
