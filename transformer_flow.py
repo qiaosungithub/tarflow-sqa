@@ -256,8 +256,6 @@ class MetaBlock(torch.nn.Module):
 
 
 class Model(torch.nn.Module):
-    VAR_LR: float = 0.1
-    var: torch.Tensor
 
     def __init__(
         self,
@@ -294,8 +292,6 @@ class Model(torch.nn.Module):
                 )
             )
         self.blocks = torch.nn.ModuleList(blocks)
-        # prior for nvp mode should be all ones, but needs to be learnd for the vp mode
-        self.register_buffer('var', torch.ones(self.num_patches, pixel_channels))
         # print number of parameters
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
@@ -315,6 +311,7 @@ class Model(torch.nn.Module):
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
+        y = torch.zeros_like(y) # unconditional version
         x = self.patchify(x)
         nan_or_inf(x, "patchify")
         outputs = []
@@ -327,10 +324,6 @@ class Model(torch.nn.Module):
             logdets = logdets + logdet
             outputs.append(x)
         return x, outputs, logdets
-
-    def update_prior(self, z: torch.Tensor):
-        z2 = (z**2).mean(dim=0)
-        self.var.lerp_(z2.detach(), weight=self.VAR_LR)
 
     def get_loss(self, z: torch.Tensor, logdets: torch.Tensor):
         return 0.5 * z.pow(2).mean() - logdets.mean()
@@ -345,8 +338,8 @@ class Model(torch.nn.Module):
         annealed_guidance: bool = False,
         return_sequence: bool = False,
     ) -> torch.Tensor | list[torch.Tensor]:
+        y = torch.zeros_like(y) # unconditional version
         seq = [self.unpatchify(x)]
-        x = x * self.var.sqrt()
         for i in range(self.num_blocks-1, -1, -1):
             block = self.blocks[i]
             x = block.reverse(x, y, guidance, guide_what, attn_temp, annealed_guidance)

@@ -22,7 +22,7 @@ import torch
 import torch.distributed
 import torch.utils.data
 import torchvision as tv
-from torchmetrics.image.fid import FrechetInceptionDistance
+# from torchmetrics.image.fid import FrechetInceptionDistance
 
 
 class CosineLRSchedule(torch.nn.Module):
@@ -53,6 +53,35 @@ class CosineLRSchedule(torch.nn.Module):
 
         t = (counter - self.warmup_steps) / (self.total_steps - self.warmup_steps)
         new_lr = self.min_lr + 0.5 * (1 + math.cos(math.pi * t)) * (self.max_lr - self.min_lr)
+        return self.set_lr(new_lr)
+    
+class ConstLR_warmup(torch.nn.Module):
+    counter: torch.Tensor
+
+    def __init__(self, optimizer, warmup_steps: int, total_steps: int, max_lr: float):
+        super().__init__()
+        self.register_buffer('counter', torch.zeros(()))
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.optimizer = optimizer
+        self.max_lr = max_lr
+        self.min_lr = 1e-6
+        self.set_lr(1e-6)
+
+    def set_lr(self, lr: float) -> float:
+        if 1e-6 <= lr <= self.max_lr:
+            for pg in self.optimizer.param_groups:
+                pg['lr'] = lr
+        return max(1e-6, min(self.max_lr, lr))
+
+    def step(self) -> float:
+        with torch.no_grad():
+            counter = self.counter.add_(1).item()
+        if self.counter <= self.warmup_steps:
+            new_lr = self.min_lr + counter / self.warmup_steps * (self.max_lr - self.min_lr)
+            return self.set_lr(new_lr)
+
+        new_lr = self.max_lr
         return self.set_lr(new_lr)
 
 
@@ -87,9 +116,9 @@ class Distributed:
             torch.distributed.destroy_process_group()
 
 
-class FID(FrechetInceptionDistance):
-    def add_state(self, name, default, *args, **kwargs):
-        self.register_buffer(name, default)
+# class FID(FrechetInceptionDistance):
+#     def add_state(self, name, default, *args, **kwargs):
+#         self.register_buffer(name, default)
 
 
 class Metrics:
@@ -164,4 +193,4 @@ def nan_or_inf(x: torch.Tensor, s:str) -> bool:
 def sqa_save(x: torch.Tensor, path, nrow=10):
     # default x is [-1, 1]
     x = (x + 1) / 2
-    tv.save_image(x, path, nrow=nrow, normalize=False)
+    tv.utils.save_image(x, path, nrow=nrow, normalize=False)

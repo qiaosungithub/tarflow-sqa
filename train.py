@@ -1,205 +1,142 @@
-#
-# For licensing see accompanying LICENSE file.
-# Copyright (C) 2024 Apple Inc. All Rights Reserved.
-#
-import argparse
-import builtins
-import pathlib
-
+from py_compile import main
 import torch
-import torch.amp
-import torch.utils
-import torch.utils.data
 import torchvision as tv
-
-import transformer_flow
+import os, wandb
+from transformer_flow import Model
 import utils
+import pathlib
+from utils import sqa_save
+from absl import logging, app, flags
 
+FLAGS = flags.FLAGS
 
-def main(args):
-    dist = utils.Distributed()
-    utils.set_random_seed(100 + dist.rank)
-    data, num_classes = utils.get_data(args.dataset, args.img_size, args.data)
+flags.DEFINE_string("workdir", None, "Directory to store model data.")
 
-    def print(*args, **kwargs):
-        if dist.local_rank == 0:
-            builtins.print(*args, **kwargs)
+def train_and_evaluate(workdir):
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "1" # set GPU
 
-    print(f'{" Config ":-^80}')
-    for k, v in sorted(vars(args).items()):
-        print(f'{k:32s}: {v}')
+    utils.set_random_seed(100)
 
-    fid = utils.FID(reset_real_features=False, normalize=True).to('cuda')
-    fid_stats_file = args.data / f'{args.dataset}_{args.img_size}_fid_stats.pth'
-    if fid_stats_file.exists():
-        print(f'Loading FID stats from {fid_stats_file}')
-        fid.load_state_dict(torch.load(fid_stats_file, map_location='cpu', weights_only=False))
+    desc = f'model: sqa_p2_c256_b6_l4, uncond'
+    logging.info(desc)
+
+    sample_dir = workdir + f'/samples'
+    ckpt_file = workdir + f'/checkpoint.pth'
+    os.makedirs(sample_dir, exist_ok=True)
+
+    # wandb.login(key='73f8ff40bb7f8589e9bd1f476196a896f662cdfa')
+    wandb.init(entity="evazhu-massachusetts-institute-of-technology", project="DL_NF", dir=sample_dir, tags=[], settings=wandb.Settings(_service_wait=60))
+
+    # training
+
+    dataset = 'mnist'
+    num_classes = 10
+    img_size = 28
+    channel_size = 1
+
+    # we use a small model for fast demonstration, increase the model size for better results
+    patch_size = 2
+    channels = 256
+    blocks = 6
+    layers_per_block = 4
+    # try different noise levels to see its effect
+    noise_std = 0.1
+
+    batch_size = 256
+    lr = 1e-3
+    # increase epochs for better results
+    epochs = 100
+    sample_freq = 10
+
+    if torch.cuda.is_available():
+        device = 'cuda' 
+    elif torch.backends.mps.is_available():
+        device = 'mps' # if on mac
     else:
-        raise FileNotFoundError(f'FID stats file "{fid_stats_file}" not found, run prepare_fid_stats.py.')
-    dist.barrier()
+        device = 'cpu' # if mps not available
+    logging.info(f'using device {device}')
 
-    fixed_noise = torch.randn(
-        args.num_samples // dist.world_size,
-        (args.img_size // args.patch_size) ** 2,
-        args.channel_size * args.patch_size**2,
-    )
-    if num_classes:
-        fixed_y = torch.randint(num_classes, (args.num_samples // dist.world_size,))
-    else:
-        fixed_y = None
-    data_sampler = torch.utils.data.DistributedSampler(data, num_replicas=dist.world_size, rank=dist.rank, shuffle=True)
-    data_loader = torch.utils.data.DataLoader(
-        data,
-        sampler=data_sampler,
-        batch_size=args.batch_size // dist.world_size,
-        num_workers=8,
-        pin_memory=True,
-        drop_last=True,
-    )
+    fixed_noise = torch.randn(num_classes * 10, (img_size // patch_size)**2, channel_size * patch_size ** 2, device=device)
+    fixed_y = torch.arange(num_classes, device=device).view(-1, 1).repeat(1, 10).flatten()
 
-    model = transformer_flow.Model(
-        in_channels=args.channel_size,
-        img_size=args.img_size,
-        patch_size=args.patch_size,
-        channels=args.channels,
-        num_blocks=args.blocks,
-        layers_per_block=args.layers_per_block,
-        nvp=args.nvp,
-        num_classes=num_classes,
-    ).to('cuda')
-    optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.95), lr=args.lr, weight_decay=1e-4)
-    lr_schedule = utils.CosineLRSchedule(optimizer, len(data_loader), args.epochs * len(data_loader), 1e-6, args.lr)
-    scaler = torch.amp.GradScaler()
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location='cpu')
-        model.load_state_dict(ckpt)
-        ckpt = torch.load(args.resume.replace('_model_', '_opt_'), map_location='cpu')
-        optimizer.load_state_dict(ckpt['optimizer'])
-        lr_schedule.load_state_dict(ckpt['lr_schedule'])
-        del ckpt
-        print(f'Loaded checkpoint {args.resume}')
+    transform = tv.transforms.Compose([
+        tv.transforms.Resize((img_size, img_size)),
+        tv.transforms.ToTensor(),
+        tv.transforms.Normalize((0.5,), (0.5,))
+    ])
+    data = tv.datasets.MNIST('.', transform=transform, train=True, download=True)
+    data_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=True, drop_last=True)
 
-    if dist.distributed:
-        model_ddp = torch.nn.parallel.DistributedDataParallel(model, device_ids=[dist.local_rank])
-    else:
-        model_ddp = model
+    model = Model(in_channels=channel_size, img_size=img_size, patch_size=patch_size, 
+                channels=channels, num_blocks=blocks, layers_per_block=layers_per_block,
+                num_classes=num_classes).to(device)
 
-    if args.noise_type == 'gaussian':
-        model_name = f'{args.patch_size}_{args.channels}_{args.blocks}_{args.layers_per_block}_{args.noise_std:.2f}'
-    else:
-        model_name = f'{args.patch_size}_{args.channels}_{args.blocks}_{args.layers_per_block}_uniform'
-    sample_dir: pathlib.Path = args.logdir / f'{args.dataset}_samples_{model_name}'
-    model_ckpt_file = args.logdir / f'{args.dataset}_model_{model_name}.pth'
-    opt_ckpt_file = args.logdir / f'{args.dataset}_opt_{model_name}.pth'
-    if dist.local_rank == 0:
-        sample_dir.mkdir(parents=True, exist_ok=True)
+    optimizer = torch.optim.AdamW(model.parameters(), betas=(0.9, 0.95), lr=lr, weight_decay=1e-4)
+    # lr_schedule = utils.CosineLRSchedule(optimizer, len(data_loader), epochs * len(data_loader), 1e-6, lr)
+    lr_schedule = utils.ConstLR_warmup(optimizer, len(data_loader), 5, lr)
 
-    enable_amp = args.noise_type == 'gaussian'
-    def compute_loss(x, y):
-        with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=enable_amp):
-            z, outputs, logdets = model_ddp(x, y)
-            loss = model.get_loss(z, logdets)
-            return loss, (z, outputs, logdets)
+    logging.info(f'logging into {sample_dir}/log.txt')
 
-    if args.compile:
-        compute_loss = torch.compile(compute_loss, fullgraph=False, backend='inductor', mode='max-autotune')
-        dist.barrier()
+    step_per_ep = len(data_loader) // batch_size
 
-    print(f'{" Training ":-^80}')
-    for epoch in range(args.epochs):
-        metrics = utils.Metrics()
+    for epoch in range(epochs):
+        losses = 0
         for x, y in data_loader:
-            x = x.cuda()
-            if args.noise_type == 'gaussian':
-                eps = args.noise_std * torch.randn_like(x)
-                x = x + eps
-            elif args.noise_type == 'uniform':
-                x_int = (x + 1) * (255 / 2)
-                x = (x_int + torch.rand_like(x_int)) / 256
-                x = x * 2 - 1
-            if num_classes:
-                y = y.cuda()
-                mask = (torch.rand(y.size(0), device='cuda') < args.drop_label).int()
-                # we use -1 to denote dropped classes
-                y = (1 - mask) * y - mask
-            else:
-                y = None
+            x = x.to(device)
+            eps = noise_std * torch.randn_like(x)
+            x = x + eps
+            y = y.to(device)
             optimizer.zero_grad()
-            loss, (z, outputs, logdets) = compute_loss(x, y)
-            if not args.nvp:
-                model.update_prior(dist.gather_concat(z.detach().square().mean(dim=0, keepdim=True).sqrt()))
-            dist.barrier()
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            current_lr = lr_schedule.step()
-            metrics.update({'loss': loss, 'loss/mse(z)': 0.5 * (z**2).mean(), 'loss/log(|det|)': logdets.mean()})
-            if args.dry_run:
-                break
+            z, outputs, logdets = model(x, y)
+            loss = model.get_loss(z, logdets)
+            loss.backward()
+            optimizer.step()
+            lr_schedule.step()
+            losses += loss.item()
 
-        metrics_dict = {'lr': current_lr, **metrics.compute(dist)}
-        if dist.local_rank == 0:
-            metrics.print(metrics_dict, epoch + 1)
-            print('\tLayer norm', ' '.join([f'{z.pow(2).mean():.4f}' for z in outputs]))
-            torch.save(model.state_dict(), model_ckpt_file)
-            torch.save({'optimizer': optimizer.state_dict(), 'lr_schedule': lr_schedule.state_dict()}, opt_ckpt_file)
-        dist.barrier()
+        log_dict = {
+            "loss": losses / len(data_loader),
+            "lr": optimizer.param_groups[0]['lr'],
+            'logdet': logdets.mean(),
+            'norm_prior': 0.5 * z.pow(2).mean()
+        }
 
-        if (epoch + 1) % args.sample_freq == 0:
-            for i in range(args.num_samples // args.sample_batch_size):
-                b = args.sample_batch_size // dist.world_size
-                noise = fixed_noise[i * b : (i + 1) * b].to('cuda')
-                y = None if fixed_y is None else fixed_y[i * b : (i + 1) * b].to('cuda')
-                with torch.no_grad():
-                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                        samples = model.reverse(noise, y, guidance=args.cfg)
-                        assert isinstance(samples, torch.Tensor)
-                    samples = dist.gather_concat(samples)
-                    fid.update(0.5 * (samples.clip(min=-1, max=1) + 1), real=False)
-                if args.dry_run:
-                    break
-            fid_score = fid.compute().item()
-            fid.reset()
+        for i, z in enumerate(outputs):
+            log_dict[f'norm_layer_{i}'] = z.pow(2).mean()
+        
+        logging.info(f'epoch {epoch}')
+        for k, v in log_dict.items():
+            logging.info(f'{k}: {v}')
 
-            if dist.local_rank == 0:
-                utils.Metrics.print({'fid': fid_score}, epoch + 1)
-                tv.utils.save_image(samples, sample_dir / f'samples_{epoch+1:03d}.png', normalize=True, nrow=16)
-            dist.barrier()
+        wandb.log(log_dict, step=step_per_ep*epoch)
 
+        if (epoch + 1) % sample_freq == 0 \
+        or epoch == 0:
+            logging.info(f'Sampling at epoch {epoch}')
+            with torch.no_grad():
+                samples = model.reverse(fixed_noise, fixed_y)
+            sqa_save(samples, sample_dir + f'/samples_{epoch:03d}.png')
+            assert samples.shape == (100, 1, 28, 28)
+            samples = samples.reshape(10, 10, 1, 28, 28).permute(0, 3, 1, 4, 2).reshape(10 * 28, 10 * 28, 1)
+            wandb.log({'samples': wandb.Image(samples, mode='L')}, step=step_per_ep*epoch)
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+            latents = model.unpatchify(z[:100])
+            sqa_save(latents, sample_dir + f'/latent_{epoch:03d}.png')
+            assert latents.shape == (100, 1, 28, 28)
+            latents = latents.reshape(10, 10, 1, 28, 28).permute(0, 3, 1, 4, 2).reshape(10 * 28, 10 * 28, 1)
+            wandb.log({'latents': wandb.Image(latents, mode='L')}, step=step_per_ep*epoch)
 
-    parser.add_argument('--data', default='data', type=pathlib.Path, help='Path for training data')
-    parser.add_argument('--logdir', default='runs', type=pathlib.Path, help='Path for artifacts')
-    parser.add_argument('--dataset', default='imagenet', choices=['imagenet', 'imagenet64', 'afhq', 'cifar'], help='Name of dataset')
-    parser.add_argument('--img_size', default=64, type=int, help='Image size')
-    parser.add_argument('--channel_size', default=3, type=int, help='Image channel size')
+            logging.info(f'sampling complete. Sample mean: {samples.mean():.4f}, std: {samples.std():.4f}, max: {samples.max():.4f}, min: {samples.min():.4f}')
+            logging.info(f'latent mean: {latents.mean():.4f}, std: {latents.std():.4f}')
+        logging.info('\n')
+    torch.save(model.state_dict(), ckpt_file)
 
-    parser.add_argument('--patch_size', default=4, type=int, help='Patch size for the model')
-    parser.add_argument('--channels', default=512, type=int, help='Model width')
-    parser.add_argument('--blocks', default=4, type=int, help='Number of autoregressive flow blocks')
-    parser.add_argument('--layers_per_block', default=8, type=int, help='Depth per flow block')
-    parser.add_argument('--noise_std', default=0.05, type=float, help='Input noise standard deviation')
-    parser.add_argument('--noise_type', default='gaussian', choices=['gaussian', 'uniform'], type=str)
-    parser.add_argument('--cfg', default=0, type=float, help='Guidance weight for sampling, 0 is no guidance')
+def main(argv):
+    if len(argv) > 1:
+        raise app.UsageError("Too many command-line arguments.")
+    
+    train_and_evaluate(FLAGS.workdir)
 
-    parser.add_argument('--batch_size', default=128, type=int, help='Training batch size across all devices')
-    parser.add_argument('--epochs', default=100, type=int, help='Training epochs')
-    parser.add_argument('--lr', default=1e-4, type=float, help='Maximum learning rate')
-    parser.add_argument('--drop_label', default=0, type=float, help='Ratio for random label drop in conditional mode')
-    parser.add_argument('--sample_freq', default=1, type=int, help='Frequency of sampling in terms of epochs')
-    parser.add_argument('--num_samples', default=4096, type=int, help='Number of sampels to draw')
-    parser.add_argument('--sample_batch_size', default=256, type=int, help='Batch size for drawing samples')
-    parser.add_argument('--resume', default='', type=str, help='path for checkpoint to resume training from')
-
-    parser.add_argument('--nvp', default=True, action=argparse.BooleanOptionalAction, help='Whether to use the non volume preserving version')
-    parser.add_argument(
-        '--compile', default=False, action=argparse.BooleanOptionalAction, help='Whether to use torch.compile, expect the first epoch to be slow when enabled'
-    )
-    parser.add_argument(
-        '--dry_run', default=False, action=argparse.BooleanOptionalAction, help='Dry run for quick tests'
-    )
-    args = parser.parse_args()
-
-    main(args)
+if __name__ == "__main__":
+    flags.mark_flags_as_required(["workdir"])
+    app.run(main)
