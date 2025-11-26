@@ -21,11 +21,17 @@ echo Log dir: $LOG_DIR
 echo Starting at $(date)
 cd $STAGE_DIR
 
-/data/scratch-oc40/zhh24/anaconda3/bin/python -m wandb login 73f8ff40bb7f8589e9bd1f476196a896f662cdfa
+export WANDB_CONFIG_DIR=$STAGE_DIR/.wandb_config      # 强制 wandb 使用可写目录
+mkdir -p $WANDB_CONFIG_DIR
+chmod 700 $WANDB_CONFIG_DIR
+export WANDB_START_METHOD=thread                      # 推荐，减少多进程问题
+export WANDB_MODE=online
+
+/data/scratch-oc40/zhh24/anaconda3/bin/python -m wandb login $WANDB_API_KEY
 sleep 1
 /data/scratch-oc40/zhh24/anaconda3/bin/python -m wandb login
 
-python train.py --workdir=$LOG_DIR | tee -a $LOG_DIR/output.log
+python -u train.py --workdir=$LOG_DIR 2>&1 | tee -a $LOG_DIR/output.log
 echo Finished at $(date)
 echo check logs at $LOG_DIR/output.log
 

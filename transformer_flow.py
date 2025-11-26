@@ -3,7 +3,8 @@
 # Copyright (C) 2024 Apple Inc. All Rights Reserved.
 #
 import torch
-from utils import nan_or_inf
+from torch import nn
+from utils.tarflow_utils import nan_or_inf
 
 class Permutation(torch.nn.Module):
 
@@ -132,6 +133,7 @@ class MetaBlock(torch.nn.Module):
         expansion: int = 4,
         nvp: bool = True,
         num_classes: int = 0,
+        clip_range: float = None,
     ):
         super().__init__()
         self.proj_in = torch.nn.Linear(in_channels, channels)
@@ -149,6 +151,7 @@ class MetaBlock(torch.nn.Module):
         self.proj_out.weight.data.fill_(0.0)
         self.permutation = permutation
         self.register_buffer('attn_mask', torch.tril(torch.ones(num_patches, num_patches)))
+        self.clip_range = clip_range
 
     def forward(self, x: torch.Tensor, y: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -180,6 +183,11 @@ class MetaBlock(torch.nn.Module):
         else:
             xb = x
             xa = torch.zeros_like(x)
+        
+        if self.clip_range is not None:
+            xa = torch.clip(xa, -self.clip_range, self.clip_range)
+            xb = torch.clip(xb, -self.clip_range, self.clip_range)
+        else: assert False
 
         scale = (-xa.float()).exp().type(xa.dtype)
         return self.permutation((x_in - xb) * scale, inverse=True), -xa.mean(dim=[1, 2])
@@ -214,6 +222,10 @@ class MetaBlock(torch.nn.Module):
         else:
             xb = x
             xa = torch.zeros_like(x)
+        if self.clip_range is not None:
+            xa = torch.clip(xa, -self.clip_range, self.clip_range)
+            xb = torch.clip(xb, -self.clip_range, self.clip_range)
+        else: assert False
         return xa, xb
 
     def set_sample_mode(self, flag: bool = True):
@@ -267,6 +279,7 @@ class Model(torch.nn.Module):
         layers_per_block: int,
         nvp: bool = True,
         num_classes: int = 0,
+        clip_range: float = None,
     ):
         super().__init__()
         self.img_size = img_size
@@ -275,6 +288,7 @@ class Model(torch.nn.Module):
         self.num_patches = (img_size // patch_size) ** 2
         self.pixel_channels = pixel_channels = in_channels * patch_size**2
         self.num_blocks = num_blocks
+        self.clip_range = clip_range
 
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
@@ -289,12 +303,16 @@ class Model(torch.nn.Module):
                     layers_per_block,
                     nvp=nvp,
                     num_classes=num_classes,
+                    clip_range=clip_range,
                 )
             )
         self.blocks = torch.nn.ModuleList(blocks)
         # print number of parameters
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
+
+        self.mu = nn.Parameter(torch.zeros(self.num_patches, self.pixel_channels))
+        self.sigma = nn.Parameter(torch.zeros(self.num_patches, self.pixel_channels))
 
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
@@ -326,7 +344,7 @@ class Model(torch.nn.Module):
         return x, outputs, logdets
 
     def get_loss(self, z: torch.Tensor, logdets: torch.Tensor):
-        return 0.5 * z.pow(2).mean() - logdets.mean()
+        return 0.5 * ((z - self.mu) / (self.sigma.exp())).pow(2).mean() - logdets.mean()
 
     def reverse(
         self,
@@ -338,6 +356,9 @@ class Model(torch.nn.Module):
         annealed_guidance: bool = False,
         return_sequence: bool = False,
     ) -> torch.Tensor | list[torch.Tensor]:
+        
+        # x: noise
+        x = x * self.sigma.exp() + self.mu # prior
         y = torch.zeros_like(y) # unconditional version
         seq = [self.unpatchify(x)]
         for i in range(self.num_blocks-1, -1, -1):
