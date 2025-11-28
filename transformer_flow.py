@@ -280,6 +280,7 @@ class Model(torch.nn.Module):
         nvp: bool = True,
         num_classes: int = 0,
         clip_range: float = None,
+        clip_exp_sigma: float = None,
     ):
         super().__init__()
         self.img_size = img_size
@@ -289,6 +290,7 @@ class Model(torch.nn.Module):
         self.pixel_channels = pixel_channels = in_channels * patch_size**2
         self.num_blocks = num_blocks
         self.clip_range = clip_range
+        self.clip_exp_sigma = clip_exp_sigma
 
         permutations = [PermutationIdentity(self.num_patches), PermutationFlip(self.num_patches)]
 
@@ -313,6 +315,8 @@ class Model(torch.nn.Module):
 
         self.mu = nn.Parameter(torch.zeros(self.num_patches, self.pixel_channels))
         self.sigma = nn.Parameter(torch.zeros(self.num_patches, self.pixel_channels))
+
+        # self.sigma = torch.ones(self.num_patches, self.pixel_channels, dtype=torch.float32).to('cuda') # fixed, for debug
 
     def patchify(self, x: torch.Tensor) -> torch.Tensor:
         """Convert an image (N,C',H,W) to a sequence of patches (N,T,C')"""
@@ -341,11 +345,16 @@ class Model(torch.nn.Module):
             nan_or_inf(x, f"block {i} output")
             logdets = logdets + logdet
             outputs.append(x)
+        outputs = [self.unpatchify(o) for o in outputs] # a list of (N, C, H, W)
         return x, outputs, logdets
 
     def get_loss(self, z: torch.Tensor, logdets: torch.Tensor):
-        return 0.5 * ((z - self.mu) / (self.sigma.exp())).pow(2).mean() - logdets.mean()
+        std = self.sigma.exp()
+        if self.clip_exp_sigma is not None:
+            std = torch.clamp(std, max=self.clip_exp_sigma)
+        return 0.5 * ((z - self.mu) / std).pow(2).mean() + self.sigma.mean() - logdets.mean()
 
+    @torch.no_grad()
     def reverse(
         self,
         x: torch.Tensor,
@@ -358,7 +367,10 @@ class Model(torch.nn.Module):
     ) -> torch.Tensor | list[torch.Tensor]:
         
         # x: noise
-        x = x * self.sigma.exp() + self.mu # prior
+        std = self.sigma.exp()
+        if self.clip_exp_sigma is not None:
+            std = torch.clamp(std, max=self.clip_exp_sigma)
+        x = x * std + self.mu # prior
         y = torch.zeros_like(y) # unconditional version
         seq = [self.unpatchify(x)]
         for i in range(self.num_blocks-1, -1, -1):

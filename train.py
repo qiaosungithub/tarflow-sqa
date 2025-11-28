@@ -8,7 +8,7 @@ import pathlib
 from utils.tarflow_utils import sqa_save
 from absl import logging, app, flags
 
-from utils.logging_utils import GoodLogger
+from utils.logging_utils import GoodLogger, to_uint_8, MyMetrics
 
 FLAGS = flags.FLAGS
 
@@ -17,9 +17,9 @@ flags.DEFINE_string("workdir", None, "Directory to store model data.")
 def train_and_evaluate(workdir):
     # os.environ["CUDA_VISIBLE_DEVICES"] = "1" # set GPU
 
-    u.set_random_seed(100)
+    u.set_random_seed(42)
 
-    desc = f'model: sqa_p2_c256_b6_l4, uncond'
+    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma + clip 1.0 + fixed probability'
     logging.info(desc)
 
     sample_dir = workdir + f'/samples'
@@ -27,7 +27,7 @@ def train_and_evaluate(workdir):
     os.makedirs(sample_dir, exist_ok=True)
 
     # wandb.login(key='73f8ff40bb7f8589e9bd1f476196a896f662cdfa')
-    wandb.init(entity="evazhu-massachusetts-institute-of-technology", project="DL_NF", dir=sample_dir, tags=[], settings=wandb.Settings(_service_wait=60))
+    wandb.init(entity="evazhu-massachusetts-institute-of-technology", project="DL_NF", dir=sample_dir, tags=[], settings=wandb.Settings(_service_wait=60), notes=desc)
 
     # training
 
@@ -42,10 +42,10 @@ def train_and_evaluate(workdir):
     layers_per_block = 4
     # try different noise levels to see its effect
     noise_std = 0.1
-    clip_range = 3.0
+    clip_range = 1.0
 
     batch_size = 256
-    lr = 1e-3
+    lr = 2e-4
     # increase epochs for better results
     epochs = 100
     sample_freq = 10
@@ -79,17 +79,18 @@ def train_and_evaluate(workdir):
 
     logging.info(f'logging into {sample_dir}/log.txt')
 
-    step_per_ep = len(data_loader) // batch_size
+    step_per_ep = len(data_loader)
 
     logger = GoodLogger(workdir=sample_dir, use_wandb=True)
+    metric_mnger = MyMetrics(reduction="avg")
 
     for epoch in range(epochs):
         logging.info(f'epoch {epoch}')
-        losses = 0
         step = epoch * step_per_ep
         for i_batch, (x, y) in enumerate(data_loader):
             x = x.to(device)
             eps = noise_std * torch.randn_like(x)
+            # print(f'{x.min()=}, {x.max()=}, {eps.min()=}, {eps.max()=}')
             x = x + eps
             y = y.to(device)
             optimizer.zero_grad()
@@ -98,23 +99,42 @@ def train_and_evaluate(workdir):
             loss.backward()
             optimizer.step()
             lr_schedule.step()
-            losses += loss.item()
+            
+            metric_mnger.update({
+                "loss": loss.item(),
+                'logdet': logdets.mean().item(),
+                'norm_prior': 0.5 * z.pow(2).mean().item(),
+                'mu norm': model.mu.pow(2).mean().item(),
+                'sigma mean': model.sigma.exp().mean().item(),
+            })
 
             step = epoch * step_per_ep + i_batch
 
             if step % 100 == 0:
                 with torch.no_grad():
-                    log_dict = {
-                        "loss": losses / len(data_loader),
-                        "lr": optimizer.param_groups[0]['lr'],
-                        'logdet': logdets.mean(),
-                        'norm_prior': 0.5 * z.pow(2).mean(),
-                        'mu norm': model.mu.pow(2).mean(),
-                        'sigma mean': model.sigma.exp().mean(),
-                    }
+                    log_dict = metric_mnger.compute_and_reset()
                     for i, z in enumerate(outputs):
                         log_dict[f'norm_layer_{i}'] = z.pow(2).mean()
                     logger.log_dict(step, log_dict)
+
+                    # vis trajectory
+                    # output: a list of shape (N, C, H, W)
+                    vis = torch.cat(outputs, dim=2)[:6]
+                    vis = vis.permute(2, 0, 3, 1)
+                    vis = vis.reshape(vis.shape[0], -1, channel_size)
+                    # print(f'{vis.shape=}')
+                    vis = to_uint_8(vis)
+                    wandb.log({'vis': wandb.Image(vis, mode='L', normalize=False)}, step=step)
+
+                    # vis mu and sigma
+                    mu = model.mu # (num_patches, patch_dim)
+                    mu_img = model.unpatchify(mu.unsqueeze(0)).squeeze(0).permute(1, 2, 0) # (C, H, W)
+                    mu_img = to_uint_8(mu_img)
+                    wandb.log({'mu': wandb.Image(mu_img, mode='L', normalize=False)}, step=step)
+
+                    sigma = model.sigma.exp() # (num_patches, patch_dim)
+                    sigma_img = model.unpatchify(sigma.unsqueeze(0)).squeeze(0).permute(1, 2, 0) # (C, H, W)
+                    wandb.log({'sigma': wandb.Image(sigma_img, mode='L', normalize=True)}, step=step) # normalize it, since we do not know its scale
 
         if (epoch + 1) % sample_freq == 0 \
         or epoch == 0:
@@ -124,15 +144,15 @@ def train_and_evaluate(workdir):
             sqa_save(samples, sample_dir + f'/samples_{epoch:03d}.png')
             assert samples.shape == (100, 1, 28, 28)
             samples = samples.reshape(10, 10, 1, 28, 28).permute(0, 3, 1, 4, 2).reshape(10 * 28, 10 * 28, 1)
-            s = ((samples + 1.) / 2. * 255).to(torch.uint8)
-            wandb.log({'samples': wandb.Image(s, mode='L')}, step=step)
+            s = to_uint_8(samples)
+            wandb.log({'samples': wandb.Image(s, mode='L', normalize=False)}, step=step)
 
             latents = model.unpatchify(z[:100])
             sqa_save(latents, sample_dir + f'/latent_{epoch:03d}.png')
             assert latents.shape == (100, 1, 28, 28)
             latents = latents.reshape(10, 10, 1, 28, 28).permute(0, 3, 1, 4, 2).reshape(10 * 28, 10 * 28, 1)
-            l = ((latents + 1.) / 2. * 255).to(torch.uint8)
-            wandb.log({'latents': wandb.Image(l, mode='L')}, step=step)
+            l = to_uint_8(latents)
+            wandb.log({'latents': wandb.Image(l, mode='L', normalize=False)}, step=step)
 
             logging.info(f'sampling complete. Sample mean: {samples.mean():.4f}, std: {samples.std():.4f}, max: {samples.max():.4f}, min: {samples.min():.4f}')
             logging.info(f'latent mean: {latents.mean():.4f}, std: {latents.std():.4f}')

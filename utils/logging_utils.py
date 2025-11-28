@@ -4,6 +4,7 @@ from absl import logging
 import wandb, torch, os
 import numpy as np
 from PIL import Image
+from collections import defaultdict
 
 class ExcludeInfo(sys_logging.Filter):
     def __init__(self, exclude_files):
@@ -94,3 +95,52 @@ class NullLogger:
     @staticmethod
     def log_image(*args, **kwargs):
         pass
+
+def to_uint_8(img):
+    img = (img + 1.) / 2. * 255
+    img = img.clamp(0, 255).to(torch.uint8)
+    # to PIL
+    img = Image.fromarray(img.detach().cpu().numpy()[:, :, 0], mode='L')
+    return img
+
+class LastItem:
+    def __init__(self):
+        self.val = 114514.1919810
+
+    def append(self, v):
+        self.val = v
+
+    def get(self):
+        return self.val
+
+
+class Avger(list):
+    def get(self):
+        return sum(self) / len(self) if len(self) > 0 else 114514.1919810
+
+class MyMetrics:
+    def __init__(self, reduction="last"):
+        self.reduction_cls = {
+            "last": LastItem,
+            "avg": Avger,
+        }[reduction]
+        self.metrics = defaultdict(self.reduction_cls)
+
+    def update(self, metrics):
+        for k, v in metrics.items():
+            self.metrics[k].append(v)
+
+    def compute(self, *keys):
+        if len(keys) == 0:
+            return {k: float(v.get()) for k, v in self.metrics.items()}
+        else:
+            raise NotImplementedError
+            # return tuple(self.metrics[k].get() for k in keys)
+
+    def reset(self):
+        self.metrics = defaultdict(self.reduction_cls)
+
+    def compute_and_reset(self, *keys):
+        a = self.compute(*keys)
+        self.reset()
+        return a
