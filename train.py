@@ -19,7 +19,7 @@ def train_and_evaluate(workdir):
 
     u.set_random_seed(42)
 
-    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma + clip 1.0 + fixed probability'
+    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma per class + clip 1.0'
     logging.info(desc)
 
     sample_dir = workdir + f'/samples'
@@ -95,7 +95,7 @@ def train_and_evaluate(workdir):
             y = y.to(device)
             optimizer.zero_grad()
             z, outputs, logdets = model(x, y)
-            loss = model.get_loss(z, logdets)
+            loss = model.get_loss(z, y, logdets)
             loss.backward()
             optimizer.step()
             lr_schedule.step()
@@ -105,7 +105,7 @@ def train_and_evaluate(workdir):
                 'logdet': logdets.mean().item(),
                 'norm_prior': 0.5 * z.pow(2).mean().item(),
                 'mu norm': model.mu.pow(2).mean().item(),
-                'sigma mean': model.sigma.exp().mean().item(),
+                'std mean': model.sigma.exp().mean().item(),
             })
 
             step = epoch * step_per_ep + i_batch
@@ -127,13 +127,15 @@ def train_and_evaluate(workdir):
                     wandb.log({'vis': wandb.Image(vis, mode='L', normalize=False)}, step=step)
 
                     # vis mu and sigma
-                    mu = model.mu # (num_patches, patch_dim)
-                    mu_img = model.unpatchify(mu.unsqueeze(0)).squeeze(0).permute(1, 2, 0) # (C, H, W)
+                    mu = model.mu # (num_classes, num_patches, patch_dim)
+                    mu_img = model.unpatchify(mu) # (num_classes, C, H, W)
+                    mu_img = mu_img.permute(2, 3, 0, 1).reshape(28, 28 * num_classes, 1)
                     mu_img = to_uint_8(mu_img)
                     wandb.log({'mu': wandb.Image(mu_img, mode='L', normalize=False)}, step=step)
 
-                    sigma = model.sigma.exp() # (num_patches, patch_dim)
-                    sigma_img = model.unpatchify(sigma.unsqueeze(0)).squeeze(0).permute(1, 2, 0) # (C, H, W)
+                    sigma = model.sigma.exp() # (num_classes, num_patches, patch_dim)
+                    sigma_img = model.unpatchify(sigma) # (num_classes, C, H, W)
+                    sigma_img = sigma_img.permute(2, 3, 0, 1).reshape(28, 28 * num_classes, 1)
                     wandb.log({'sigma': wandb.Image(sigma_img, mode='L', normalize=True)}, step=step) # normalize it, since we do not know its scale
 
         if (epoch + 1) % sample_freq == 0 \

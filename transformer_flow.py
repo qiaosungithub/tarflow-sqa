@@ -162,6 +162,9 @@ class MetaBlock(torch.nn.Module):
         pos_embed = self.permutation(self.pos_embed, dim=0)
         x_in = x
         x = self.proj_in(x) + pos_embed
+
+        y = torch.zeros_like(y)
+
         if self.class_embed is not None:
             if y is not None:
                 if (y < 0).any():
@@ -207,6 +210,8 @@ class MetaBlock(torch.nn.Module):
         """
         x_in = x[:, i : i + 1]  # get i-th patch but keep the sequence dimension
         x = self.proj_in(x_in) + pos_embed[i : i + 1]
+        y = torch.zeros_like(y)
+
         if self.class_embed is not None:
             if y is not None:
                 x = x + self.class_embed[y]
@@ -304,7 +309,7 @@ class Model(torch.nn.Module):
                     permutations[i % 2],
                     layers_per_block,
                     nvp=nvp,
-                    num_classes=num_classes,
+                    num_classes=1,
                     clip_range=clip_range,
                 )
             )
@@ -313,8 +318,8 @@ class Model(torch.nn.Module):
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
 
-        self.mu = nn.Parameter(torch.zeros(self.num_patches, self.pixel_channels))
-        self.sigma = nn.Parameter(torch.zeros(self.num_patches, self.pixel_channels))
+        self.mu = nn.Parameter(torch.zeros(num_classes, self.num_patches, self.pixel_channels))
+        self.sigma = nn.Parameter(torch.zeros(num_classes, self.num_patches, self.pixel_channels))
 
         # self.sigma = torch.ones(self.num_patches, self.pixel_channels, dtype=torch.float32).to('cuda') # fixed, for debug
 
@@ -333,7 +338,6 @@ class Model(torch.nn.Module):
     def forward(
         self, x: torch.Tensor, y: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, list[torch.Tensor], torch.Tensor]:
-        y = torch.zeros_like(y) # unconditional version
         x = self.patchify(x)
         nan_or_inf(x, "patchify")
         outputs = []
@@ -348,11 +352,11 @@ class Model(torch.nn.Module):
         outputs = [self.unpatchify(o) for o in outputs] # a list of (N, C, H, W)
         return x, outputs, logdets
 
-    def get_loss(self, z: torch.Tensor, logdets: torch.Tensor):
-        std = self.sigma.exp()
+    def get_loss(self, z: torch.Tensor, y: torch.Tensor, logdets: torch.Tensor):
+        std = self.sigma[y].exp()
         if self.clip_exp_sigma is not None:
             std = torch.clamp(std, max=self.clip_exp_sigma)
-        return 0.5 * ((z - self.mu) / std).pow(2).mean() + self.sigma.mean() - logdets.mean()
+        return 0.5 * ((z - self.mu[y]) / std).pow(2).mean() + self.sigma[y].mean() - logdets.mean()
 
     @torch.no_grad()
     def reverse(
@@ -367,11 +371,10 @@ class Model(torch.nn.Module):
     ) -> torch.Tensor | list[torch.Tensor]:
         
         # x: noise
-        std = self.sigma.exp()
+        std = self.sigma[y].exp()
         if self.clip_exp_sigma is not None:
             std = torch.clamp(std, max=self.clip_exp_sigma)
-        x = x * std + self.mu # prior
-        y = torch.zeros_like(y) # unconditional version
+        x = x * std + self.mu[y] # prior
         seq = [self.unpatchify(x)]
         for i in range(self.num_blocks-1, -1, -1):
             block = self.blocks[i]
