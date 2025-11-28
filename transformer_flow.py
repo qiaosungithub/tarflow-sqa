@@ -318,7 +318,7 @@ class Model(torch.nn.Module):
         num_params = sum(p.numel() for p in self.parameters())
         print(f'Number of parameters: {num_params / 1e6:.2f}M')
 
-        self.mu = nn.Parameter(torch.zeros(num_classes, self.num_patches, self.pixel_channels))
+        self.mu = nn.Parameter(torch.randn(num_classes, self.num_patches, self.pixel_channels, dtype=torch.float32) * 1.0)
         self.sigma = nn.Parameter(torch.zeros(num_classes, self.num_patches, self.pixel_channels))
 
         # self.sigma = torch.ones(self.num_patches, self.pixel_channels, dtype=torch.float32).to('cuda') # fixed, for debug

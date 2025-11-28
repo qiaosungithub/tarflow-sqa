@@ -19,7 +19,7 @@ def train_and_evaluate(workdir):
 
     u.set_random_seed(42)
 
-    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma per class + clip 1.0'
+    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma per class + clip 3.0 + random mu init 1.0'
     logging.info(desc)
 
     sample_dir = workdir + f'/samples'
@@ -42,7 +42,7 @@ def train_and_evaluate(workdir):
     layers_per_block = 4
     # try different noise levels to see its effect
     noise_std = 0.1
-    clip_range = 1.0
+    clip_range = 3.0
 
     batch_size = 256
     lr = 2e-4
@@ -128,14 +128,14 @@ def train_and_evaluate(workdir):
 
                     # vis mu and sigma
                     mu = model.mu # (num_classes, num_patches, patch_dim)
-                    mu_img = model.unpatchify(mu) # (num_classes, C, H, W)
-                    mu_img = mu_img.permute(2, 3, 0, 1).reshape(28, 28 * num_classes, 1)
+                    mu_img = model.unpatchify(mu).reshape(2, 5, 1, 28, 28) # (2, 5, C, H, W)
+                    mu_img = mu_img.permute(0, 3, 1, 4, 2).reshape(28 * 2, 28 * 5, 1)
                     mu_img = to_uint_8(mu_img)
                     wandb.log({'mu': wandb.Image(mu_img, mode='L', normalize=False)}, step=step)
 
                     sigma = model.sigma.exp() # (num_classes, num_patches, patch_dim)
-                    sigma_img = model.unpatchify(sigma) # (num_classes, C, H, W)
-                    sigma_img = sigma_img.permute(2, 3, 0, 1).reshape(28, 28 * num_classes, 1)
+                    sigma_img = model.unpatchify(sigma).reshape(2, 5, 1, 28, 28) # (2, 5, C, H, W)
+                    sigma_img = sigma_img.permute(0, 3, 1, 4, 2).reshape(28 * 2, 28 * 5, 1)
                     wandb.log({'sigma': wandb.Image(sigma_img, mode='L', normalize=True)}, step=step) # normalize it, since we do not know its scale
 
         if (epoch + 1) % sample_freq == 0 \
