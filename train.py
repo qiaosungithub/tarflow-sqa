@@ -19,7 +19,7 @@ def train_and_evaluate(workdir):
 
     u.set_random_seed(42)
 
-    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma per class + clip 3.0 + random mu init 1.0'
+    desc = f'model: sqa_p2_c256_b6_l4, uncond, learned mu / sigma per class + clip 1.0 + mu init as images'
     logging.info(desc)
 
     sample_dir = workdir + f'/samples'
@@ -42,7 +42,7 @@ def train_and_evaluate(workdir):
     layers_per_block = 4
     # try different noise levels to see its effect
     noise_std = 0.1
-    clip_range = 3.0
+    clip_range = 1.0
 
     batch_size = 256
     lr = 2e-4
@@ -83,6 +83,22 @@ def train_and_evaluate(workdir):
 
     logger = GoodLogger(workdir=sample_dir, use_wandb=True)
     metric_mnger = MyMetrics(reduction="avg")
+
+    # get one image for each label in MNIST
+    fixed_images = []
+    fixed_labels = []
+    for img, label in data:
+        if label not in fixed_labels:
+            fixed_images.append(img)
+            fixed_labels.append(label)
+        if len(fixed_labels) >= num_classes:
+            break
+    # sort them
+    fixed_labels, fixed_images = zip(*sorted(zip(fixed_labels, fixed_images)))
+    fixed_images = torch.stack(fixed_images, dim=0).to(device) # (num_classes, C, H, W)
+    with torch.no_grad():
+        model.mu.data.copy_(model.patchify(fixed_images))
+    logging.info('Initialized mu with one image per class from MNIST')
 
     for epoch in range(epochs):
         logging.info(f'epoch {epoch}')
